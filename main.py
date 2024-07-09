@@ -16,7 +16,10 @@ def apply_crt_effect(surface):
             # Add RGB offset effect
             if random.random() > 0.99:
                 color = (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
-            
+            # Simulate  the curvature of the CRT monitor
+                offset_x = int(10 * math.sin(2 * math.pi * y / height))
+                new_x = min(max(x + offset_x, 0), width - 1)
+                surface.set_at((new_x, y), color)
 
 # Initialise Pygame
 pygame.init()
