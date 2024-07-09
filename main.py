@@ -28,8 +28,12 @@ pygame.init()
 screen_info = pygame.display.Info()
 screen_width, screen_height = screen_info.current_w, screen_info.current_h
 
-# Setup full screen display
+# Setup full screen display with alpha transparency
 screen = pygame.display.set_mode((screen_width, screen_height), pygame.NOFRAME)
+pygame.display.set_caption('CRT Monitor Effect')
+
+# Enable alpha blending
+screen.set_alpha(128)
 
 # Load and scale image for display
 
