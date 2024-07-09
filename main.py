@@ -4,7 +4,6 @@ import random
 import math
 
 #Apply changes to the screen
-
 def apply_crt_effect(surface):
     width, height = surface.get_size()
     for y in range(height):
@@ -36,4 +35,8 @@ pygame.display.set_caption('CRT Monitor Effect')
 screen.set_alpha(128)
 
 # Load and scale image for display
+image = pygame.image.load('image.jpg').convert() # Image still to be created
+image = pygame.transform.scale(image, (screen_width, screen_height))
 
+# Set up clock for controlling the frame rate
+clock = pygame.time.Clock()
