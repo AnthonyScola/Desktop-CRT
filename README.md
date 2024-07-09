@@ -47,6 +47,10 @@ This project creates a CRT monitor and VHS recording effect overlay for your scr
    - The overlay will cover the entire screen.
    - To close the application, press `Shift + Esc`.
 
+## WIP Items
+
+- Visual filter image to overlay on the screen.
+
 ## Code Explanation
 
 ### Main Loop
