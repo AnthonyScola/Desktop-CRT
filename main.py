@@ -40,3 +40,32 @@ image = pygame.transform.scale(image, (screen_width, screen_height))
 
 # Set up clock for controlling the frame rate
 clock = pygame.time.Clock()
+
+# Main loop
+running = True
+while running:
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+        elif event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE and pygame.key.get_mods() & pygame.KMOD_SHIFT:
+                running = False
+
+    # Clear the screen with transparent black
+    screen.fill((0,0,0,0))
+
+    #Create a copy of the image to apply the CRT effect
+    crt_image = image.copy()
+    apply_crt_effect(crt_image)
+
+    # Draw the image with effect
+    screen.blit(crt_image, (0, 0))
+
+    pygame.display.flip()
+
+    #Cap the frame rate at 60 FPS
+    clock.tick(60)
+
+# Quit Pygame
+pygame.quit()
+sys.exit()
