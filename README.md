@@ -17,8 +17,8 @@ This project creates a CRT monitor and VHS recording effect overlay for your scr
 
 1. **Clone the Repository**
    ```bash
-   git clone https://github.com/yourusername/crt-filter-effect.git
-   cd crt-filter-effect
+   git clone https://github.com/Terafora/CRT-Filter.git
+   cd CRT-Filter
    ```
 
 2. **Set Up Virtual Environment**
@@ -115,10 +115,6 @@ This project creates a CRT monitor and VHS recording effect overlay for your scr
 ## Contributing
 
 Contributions are welcome! Please fork the repository and submit a pull request for any changes.
-
-## License
-
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
 ## Contact
 
