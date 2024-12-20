@@ -196,24 +196,26 @@ class ControlPanel:
             self.preview_update_id = self.root.after(100, self.update_preview)  # Lower update rate
 
     def toggle_filter(self):
-        if not self.running:
+        if not self.running and not self.filter_thread:
             # Start the filter
-            self.running = True
-            self.start_button.configure(text="Stop Filter")
-            
-            # Initialize CRT filter with current settings
             pygame.init()
             screen_info = pygame.display.Info()
             self.crt_filter = CRTFilter(screen_info.current_w, screen_info.current_h)
             self.update_filter_params()
             
-            # Start filter thread
+            self.running = True
+            self.start_button.configure(text="Stop Filter")
             self.filter_thread = threading.Thread(target=run_filter, args=(self,))
             self.filter_thread.start()
+            self.root.bind('<Escape>', lambda e: self.stop_filter())
         else:
-            # Stop the filter
+            self.stop_filter()
+            
+    def stop_filter(self):
+        if self.running:
             self.running = False
             self.start_button.configure(text="Start Filter")
+            self.root.unbind('<Escape>')
             if self.filter_thread:
                 self.filter_thread.join()
                 self.filter_thread = None
@@ -286,17 +288,18 @@ class CRTFilter:
 
     def apply_curvature(self, surface):
         if self.curvature == 0:  # Skip if no curvature
-            return surface
+            return surface.copy()
             
         width = surface.get_width()
         height = surface.get_height()
         
         # Create curved surface with same format as input
         curved = pygame.Surface((width, height), surface.get_flags())
+        curved.set_colorkey((0, 0, 0))  # Make black transparent
         
         # Calculate distortion with reduced strength
         X, Y, R = self.create_coordinate_grid(width, height)
-        F = 1 + R * (self.curvature * R * 0.5)  # Reduce effect strength
+        F = 1 + R * (self.curvature * R * 0.25)  # Further reduce effect strength
         
         source_x = ((X * F + 1) * width / 2).astype(np.int32)
         source_y = ((Y * F + 1) * height / 2).astype(np.int32)
@@ -355,12 +358,15 @@ def run_filter(control_panel):
     
     try:
         while control_panel.running:
+            # Handle events
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     control_panel.running = False
+                    break
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
                         control_panel.running = False
+                        break
                     elif event.key == pygame.K_1:
                         control_panel.scanline_var.set(max(0, control_panel.scanline_var.get() - 0.05))
                         control_panel.update_filter_params()
@@ -389,20 +395,31 @@ def run_filter(control_panel):
                         control_panel.perf_var.set(not control_panel.perf_var.get())
                         control_panel.update_filter_params()
             
-            monitor = sct.monitors[control_panel.selected_monitor + 1]
-            screen_shot = sct.grab(monitor)
-            
-            screen_array = np.array(screen_shot)
-            screen_array = screen_array[:, :, :3]
-            screen_array = screen_array.swapaxes(0, 1)
-            screen_surface = pygame.surfarray.make_surface(screen_array)
-            
-            screen.fill((0, 0, 0, 0))
-            filtered_surface = control_panel.crt_filter.apply(screen_surface)
-            screen.blit(filtered_surface, (0, 0))
-            
-            pygame.display.flip()
-            clock.tick(120)
+            try:
+                # Capture screen
+                monitor = sct.monitors[control_panel.selected_monitor + 1]
+                screen_shot = sct.grab(monitor)
+                
+                # Convert to pygame surface with proper color format
+                screen_array = np.array(screen_shot)
+                screen_array = screen_array[:, :, :3]  # Remove alpha
+                screen_array = screen_array.swapaxes(0, 1)  # Correct orientation
+                screen_surface = pygame.Surface(screen_array.shape[:2])
+                pygame.surfarray.blit_array(screen_surface, screen_array)
+                
+                # Apply filter
+                filtered_surface = control_panel.crt_filter.apply(screen_surface)
+                
+                # Update display
+                screen.fill((0, 0, 0, 0))
+                screen.blit(filtered_surface, (0, 0), special_flags=pygame.BLEND_PREMULTIPLIED)
+                pygame.display.flip()
+                
+                # Control frame rate
+                clock.tick(120)
+            except Exception as e:
+                print(f"Error during screen capture: {e}")
+                continue
     finally:
         sct.close()
 
