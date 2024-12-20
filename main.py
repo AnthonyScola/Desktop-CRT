@@ -5,8 +5,9 @@ import numpy as np
 import mss
 import tkinter as tk
 from tkinter import ttk, Menu
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageDraw
 import threading
+import subprocess
 
 class ControlPanel:
     def __init__(self):
@@ -53,6 +54,7 @@ class ControlPanel:
         
         shortcuts = [
             "ESC - Exit Filter",
+            "0 - Show/Hide Controls",
             "1/2 - Adjust Scanlines (±0.05)",
             "3/4 - Adjust Curvature (±0.1)",
             "5/6 - Adjust Chromatic Aberration (±0.5)",
@@ -207,6 +209,9 @@ class ControlPanel:
             self.filter_thread = threading.Thread(target=run_filter, args=(self,))
             self.filter_thread.start()
             self.root.bind('<Escape>', lambda e: self.stop_filter())
+            
+            # Hide GUI
+            self.root.withdraw()
         else:
             self.stop_filter()
             
@@ -238,6 +243,7 @@ class CRTFilter:
         self.vignette_intensity = 0.1
         self.chromatic_aberration = 0.5
         self.performance_mode = True
+        self.prev_frame = None  # Store previous frame
 
     def create_coordinate_grid(self, width, height):
         x = np.linspace(-1, 1, width)
@@ -336,23 +342,63 @@ class CRTFilter:
         
         return result
 
-def run_filter(control_panel):
-    # Setup display with transparency
-    os.environ['SDL_VIDEO_WINDOW_POS'] = '0,0'
+def setup_overlay_window():
+    """Set up a transparent, click-through overlay window."""
+    # Create transparent overlay window
     screen = pygame.display.set_mode((0, 0), pygame.NOFRAME | pygame.SRCALPHA)
     pygame.display.set_caption('CRT Filter')
     
-    # Make window click-through
     if sys.platform == "linux":
         try:
-            import subprocess
-            subprocess.run(['wmctrl', '-r', 'CRT Filter', '-b', 'add,skip_taskbar,skip_pager,sticky'])
-            subprocess.run(['wmctrl', '-r', 'CRT Filter', '-b', 'add,below'])
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            print("wmctrl not available - click-through may not work")
+            # Get window ID
+            window_id = subprocess.check_output(['xdotool', 'search', '--name', 'CRT Filter']).decode().strip()
+            if window_id:
+                # Set window type to dock for click-through
+                subprocess.run([
+                    'xprop', '-id', window_id,
+                    '-f', '_NET_WM_WINDOW_TYPE', '32a',
+                    '-set', '_NET_WM_WINDOW_TYPE', '_NET_WM_WINDOW_TYPE_DOCK'
+                ])
+                
+                # Make window always on top and sticky
+                subprocess.run([
+                    'xprop', '-id', window_id,
+                    '-f', '_NET_WM_STATE', '32a',
+                    '-set', '_NET_WM_STATE', '_NET_WM_STATE_ABOVE,_NET_WM_STATE_STICKY'
+                ])
+                
+                # Set window shape to make it click-through
+                subprocess.run(['xwininfo', '-id', window_id, '-shape'])
+                
+                # Set override redirect to bypass window manager
+                subprocess.run([
+                    'xprop', '-id', window_id,
+                    '-f', '_MOTIF_WM_HINTS', '32c',
+                    '-set', '_MOTIF_WM_HINTS', '2, 0, 0, 0, 0'
+                ])
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            print(f"Error setting up window properties: {e}")
+            print("Note: Install xdotool for full functionality")
+    
+    return screen
+
+def run_filter(control_panel):
+    import subprocess  # Add missing import
+    
+    # Setup overlay window
+    screen = setup_overlay_window()
     
     clock = pygame.time.Clock()
     sct = mss.mss()
+    
+    # Set window to be always on top and click-through
+    try:
+        window_id = subprocess.check_output(['xdotool', 'search', '--name', 'CRT Filter']).decode().strip()
+        if window_id:
+            subprocess.run(['xdotool', 'windowraise', window_id])
+            subprocess.run(['wmctrl', '-i', '-r', window_id, '-b', 'add,above,sticky'])
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        print(f"Error setting window properties: {e}")
     
     try:
         while control_panel.running:
@@ -393,15 +439,42 @@ def run_filter(control_panel):
                     elif event.key == pygame.K_p:
                         control_panel.perf_var.set(not control_panel.perf_var.get())
                         control_panel.update_filter_params()
+                    elif event.key == pygame.K_0:
+                        # Toggle GUI visibility
+                        if control_panel.root.state() == 'withdrawn':
+                            control_panel.root.deiconify()
+                        else:
+                            control_panel.root.withdraw()
             
             try:
                 # Capture screen
                 monitor = sct.monitors[control_panel.selected_monitor + 1]
                 screen_shot = sct.grab(monitor)
                 
-                # Convert to PIL Image first for proper color handling
+                # Get filter window geometry
+                window_id = subprocess.check_output(['xdotool', 'search', '--name', 'CRT Filter']).decode().strip()
+                window_info = subprocess.check_output(['xwininfo', '-id', window_id]).decode()
+                
+                # Parse window geometry
+                x = int(next(line.split(':')[1] for line in window_info.split('\n') if 'Absolute upper-left X' in line))
+                y = int(next(line.split(':')[1] for line in window_info.split('\n') if 'Absolute upper-left Y' in line))
+                width = int(next(line.split(':')[1] for line in window_info.split('\n') if 'Width' in line))
+                height = int(next(line.split(':')[1] for line in window_info.split('\n') if 'Height' in line))
+                
+                # Convert to PIL Image
                 img = Image.frombytes('RGB', screen_shot.size, screen_shot.rgb)
-                img = img.convert('RGB')  # Ensure RGB mode
+                
+                # Create a mask to exclude the filter window region
+                mask = Image.new('L', img.size, 255)
+                draw = ImageDraw.Draw(mask)
+                window_x = x - monitor['left']
+                window_y = y - monitor['top']
+                draw.rectangle([window_x, window_y, window_x + width, window_y + height], fill=0)
+                
+                # Apply the mask
+                img.putalpha(mask)
+                img = Image.alpha_composite(Image.new('RGBA', img.size, (0, 0, 0, 0)), img)
+                img = img.convert('RGB')
                 
                 # Convert to pygame surface
                 img_str = img.tobytes()
