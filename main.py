@@ -8,10 +8,6 @@ from tkinter import ttk, Menu
 from PIL import Image, ImageTk, ImageDraw
 import threading
 import subprocess
-import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
-import queue
-import subprocess
 
 class ControlPanel:
     def __init__(self):
@@ -171,14 +167,6 @@ class ControlPanel:
             self.preview_update_id = None
             return
             
-        # Skip frames if processing is slow
-        if hasattr(self, '_last_preview_time'):
-            if time.time() - self._last_preview_time < 0.1:  # Max 10 FPS for preview
-                self.preview_update_id = self.root.after(100, self.update_preview)
-                return
-                
-        self._last_preview_time = time.time()
-            
         try:
             monitor = self.sct.monitors[self.selected_monitor + 1]
             screenshot = self.sct.grab(monitor)
@@ -248,12 +236,8 @@ class ControlPanel:
 
 class CRTFilter:
     def __init__(self, width, height):
-        # Cache frequently used surfaces
         self.width = width
         self.height = height
-        self._cached_surfaces = {}
-        self._cached_grids = None
-        self.last_params = None
         self.scanline_intensity = 0.05
         self.curvature = 0.0
         self.vignette_intensity = 0.1
@@ -262,17 +246,10 @@ class CRTFilter:
         self.prev_frame = None  # Store previous frame
 
     def create_coordinate_grid(self, width, height):
-        # Cache coordinate grids
-        cache_key = (width, height)
-        if self._cached_grids and self._cached_grids[0] == cache_key:
-            return self._cached_grids[1:]
-            
         x = np.linspace(-1, 1, width)
         y = np.linspace(-1, 1, height)
         X, Y = np.meshgrid(x, y)
         R = np.sqrt(X**2 + Y**2)
-        
-        self._cached_grids = (cache_key, X, Y, R)
         return X, Y, R
 
     def apply_scanlines(self, surface):
@@ -284,19 +261,20 @@ class CRTFilter:
             surface.blit(line_surface, (0, y))
 
     def apply_chromatic_aberration(self, surface):
+        result = surface.copy()
         width = surface.get_width()
+        
+        pixels = pygame.surfarray.pixels3d(result)
         offset = max(1, int(self.chromatic_aberration * (width / self.width)))
         
-        # Use numpy operations instead of pixel-by-pixel
-        pixels = pygame.surfarray.pixels3d(surface)
-        red = np.roll(pixels[:, :, 0], offset, axis=0)
-        blue = np.roll(pixels[:, :, 2], -offset, axis=0)
+        red = pixels[:, :, 0].copy()
+        pixels[offset:, :, 0] = red[:-offset, :]
         
-        pixels[:, :, 0] = red
-        pixels[:, :, 2] = blue
+        blue = pixels[:, :, 2].copy()
+        pixels[:-offset, :, 2] = blue[offset:, :]
         
         del pixels
-        return surface
+        return result
 
     def apply_vignette(self, surface):
         width = surface.get_width()
@@ -343,38 +321,23 @@ class CRTFilter:
         return curved
 
     def apply(self, surface):
-        # Check if parameters changed
-        current_params = (
-            self.scanline_intensity,
-            self.curvature,
-            self.vignette_intensity,
-            self.chromatic_aberration,
-            surface.get_size()
-        )
+        result = surface.copy()
         
         if self.performance_mode:
             scale = 0.5
             small_size = (int(self.width * scale), int(self.height * scale))
+            small_surface = pygame.transform.smoothscale(result, small_size)
             
-            # Process at lower resolution
-            small_surface = pygame.transform.smoothscale(surface, small_size)
-            result = self._process_surface(small_surface)
-            return pygame.transform.smoothscale(result, (self.width, self.height))
-        
-        return self._process_surface(surface)
-
-    def _process_surface(self, surface):
-        # Batch process effects
-        result = surface.copy()
-        
-        # Pre-allocate arrays
-        if self.curvature > 0:
-            result = self.apply_curvature(result)
-        if self.chromatic_aberration > 0:
+            small_surface = self.apply_chromatic_aberration(small_surface)
+            small_surface = self.apply_curvature(small_surface)
+            self.apply_scanlines(small_surface)
+            self.apply_vignette(small_surface)
+            
+            result = pygame.transform.smoothscale(small_surface, (self.width, self.height))
+        else:
             result = self.apply_chromatic_aberration(result)
-        if self.scanline_intensity > 0:
+            result = self.apply_curvature(result)
             self.apply_scanlines(result)
-        if self.vignette_intensity > 0:
             self.apply_vignette(result)
         
         return result
@@ -420,90 +383,117 @@ def setup_overlay_window():
     return screen
 
 def run_filter(control_panel):
+    import subprocess  # Add missing import
     
+    # Setup overlay window
     screen = setup_overlay_window()
+    
     clock = pygame.time.Clock()
     sct = mss.mss()
-    frame_queue = queue.Queue(maxsize=2)
     
-    def process_frame(surface, filter_obj):
-        return filter_obj.apply(surface)
+    # Set window to be always on top and click-through
+    try:
+        window_id = subprocess.check_output(['xdotool', 'search', '--name', 'CRT Filter']).decode().strip()
+        if window_id:
+            subprocess.run(['xdotool', 'windowraise', window_id])
+            subprocess.run(['wmctrl', '-i', '-r', window_id, '-b', 'add,above,sticky'])
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        print(f"Error setting window properties: {e}")
     
     try:
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            while control_panel.running:
-                # Handle events
-                for event in pygame.event.get():
-                    if event.type == pygame.QUIT:
+        while control_panel.running:
+            # Handle events
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    control_panel.running = False
+                    break
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
                         control_panel.running = False
+                        control_panel.root.after(100, control_panel.root.quit)
                         break
-                    elif event.type == pygame.KEYDOWN:
-                        if event.key == pygame.K_ESCAPE:
-                            control_panel.running = False
-                            control_panel.root.after(100, control_panel.root.quit)
-                            break
-                        elif event.key == pygame.K_1:
-                            control_panel.scanline_var.set(max(0, control_panel.scanline_var.get() - 0.05))
-                            control_panel.update_filter_params()
-                        elif event.key == pygame.K_2:
-                            control_panel.scanline_var.set(min(0.5, control_panel.scanline_var.get() + 0.05))
-                            control_panel.update_filter_params()
-                        elif event.key == pygame.K_3:
-                            control_panel.curve_var.set(max(0, control_panel.curve_var.get() - 0.02))
-                            control_panel.update_filter_params()
-                        elif event.key == pygame.K_4:
-                            control_panel.curve_var.set(min(0.5, control_panel.curve_var.get() + 0.02))
-                            control_panel.update_filter_params()
-                        elif event.key == pygame.K_5:
-                            control_panel.chroma_var.set(max(0, control_panel.chroma_var.get() - 0.5))
-                            control_panel.update_filter_params()
-                        elif event.key == pygame.K_6:
-                            control_panel.chroma_var.set(min(5, control_panel.chroma_var.get() + 0.5))
-                            control_panel.update_filter_params()
-                        elif event.key == pygame.K_7:
-                            control_panel.vignette_var.set(max(0, control_panel.vignette_var.get() - 0.05))
-                            control_panel.update_filter_params()
-                        elif event.key == pygame.K_8:
-                            control_panel.vignette_var.set(min(0.5, control_panel.vignette_var.get() + 0.05))
-                            control_panel.update_filter_params()
-                        elif event.key == pygame.K_p:
-                            control_panel.perf_var.set(not control_panel.perf_var.get())
-                            control_panel.update_filter_params()
-                        elif event.key == pygame.K_0:
-                            # Toggle GUI visibility
-                            if control_panel.root.state() == 'withdrawn':
-                                control_panel.root.deiconify()
-                            else:
-                                control_panel.root.withdraw()
+                    elif event.key == pygame.K_1:
+                        control_panel.scanline_var.set(max(0, control_panel.scanline_var.get() - 0.05))
+                        control_panel.update_filter_params()
+                    elif event.key == pygame.K_2:
+                        control_panel.scanline_var.set(min(0.5, control_panel.scanline_var.get() + 0.05))
+                        control_panel.update_filter_params()
+                    elif event.key == pygame.K_3:
+                        control_panel.curve_var.set(max(0, control_panel.curve_var.get() - 0.02))
+                        control_panel.update_filter_params()
+                    elif event.key == pygame.K_4:
+                        control_panel.curve_var.set(min(0.5, control_panel.curve_var.get() + 0.02))
+                        control_panel.update_filter_params()
+                    elif event.key == pygame.K_5:
+                        control_panel.chroma_var.set(max(0, control_panel.chroma_var.get() - 0.5))
+                        control_panel.update_filter_params()
+                    elif event.key == pygame.K_6:
+                        control_panel.chroma_var.set(min(5, control_panel.chroma_var.get() + 0.5))
+                        control_panel.update_filter_params()
+                    elif event.key == pygame.K_7:
+                        control_panel.vignette_var.set(max(0, control_panel.vignette_var.get() - 0.05))
+                        control_panel.update_filter_params()
+                    elif event.key == pygame.K_8:
+                        control_panel.vignette_var.set(min(0.5, control_panel.vignette_var.get() + 0.05))
+                        control_panel.update_filter_params()
+                    elif event.key == pygame.K_p:
+                        control_panel.perf_var.set(not control_panel.perf_var.get())
+                        control_panel.update_filter_params()
+                    elif event.key == pygame.K_0:
+                        # Toggle GUI visibility
+                        if control_panel.root.state() == 'withdrawn':
+                            control_panel.root.deiconify()
+                        else:
+                            control_panel.root.withdraw()
+            
+            try:
+                # Capture screen
+                monitor = sct.monitors[control_panel.selected_monitor + 1]
+                screen_shot = sct.grab(monitor)
                 
-                try:
-                    # Capture screen
-                    monitor = sct.monitors[control_panel.selected_monitor + 1]
-                    screen_shot = sct.grab(monitor)
-                    
-                    # Process image...
-                    img = Image.frombytes('RGB', screen_shot.size, screen_shot.rgb)
-                    img = img.convert('RGB')
-                    
-                    # Convert to pygame surface
-                    img_str = img.tobytes()
-                    screen_surface = pygame.image.fromstring(img_str, img.size, img.mode)
-                    screen_surface = screen_surface.convert()
-                    
-                    # Process frame
-                    future = executor.submit(process_frame, screen_surface, control_panel.crt_filter)
-                    
-                    try:
-                        filtered_surface = future.result(timeout=1/60)
-                        screen.blit(filtered_surface, (0, 0))
-                        pygame.display.flip()
-                    except TimeoutError:
-                        continue
-                    
-                    clock.tick(120)
-                except Exception as e:
-                    print(f"Error during screen capture: {e}")
-                    continue
+                # Get filter window geometry
+                window_id = subprocess.check_output(['xdotool', 'search', '--name', 'CRT Filter']).decode().strip()
+                window_info = subprocess.check_output(['xwininfo', '-id', window_id]).decode()
+                
+                # Parse window geometry
+                x = int(next(line.split(':')[1] for line in window_info.split('\n') if 'Absolute upper-left X' in line))
+                y = int(next(line.split(':')[1] for line in window_info.split('\n') if 'Absolute upper-left Y' in line))
+                width = int(next(line.split(':')[1] for line in window_info.split('\n') if 'Width' in line))
+                height = int(next(line.split(':')[1] for line in window_info.split('\n') if 'Height' in line))
+                
+                # Convert to PIL Image
+                img = Image.frombytes('RGB', screen_shot.size, screen_shot.rgb)
+                
+                # Create a mask to exclude the filter window region
+                mask = Image.new('L', img.size, 255)
+                draw = ImageDraw.Draw(mask)
+                window_x = x - monitor['left']
+                window_y = y - monitor['top']
+                draw.rectangle([window_x, window_y, window_x + width, window_y + height], fill=0)
+                
+                # Apply the mask
+                img.putalpha(mask)
+                img = Image.alpha_composite(Image.new('RGBA', img.size, (0, 0, 0, 0)), img)
+                img = img.convert('RGB')
+                
+                # Convert to pygame surface
+                img_str = img.tobytes()
+                screen_surface = pygame.image.fromstring(img_str, img.size, img.mode)
+                screen_surface = screen_surface.convert()  # Convert to display format
+                
+                # Apply filter
+                filtered_surface = control_panel.crt_filter.apply(screen_surface)
+                
+                # Update display
+                screen.fill((0, 0, 0))
+                screen.blit(filtered_surface, (0, 0))
+                pygame.display.flip()
+                
+                # Control frame rate
+                clock.tick(120)
+            except Exception as e:
+                print(f"Error during screen capture: {e}")
+                continue
     finally:
         sct.close()
 
