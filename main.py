@@ -98,8 +98,8 @@ class ControlPanel:
         # Initialize default values
         self.scanline_intensity = 0.05  # Start with lighter scanlines
         self.curvature = 0.0  # Start flat
-        self.vignette_intensity = 0.1  # Lighter vignette
-        self.chromatic_aberration = 0.5  # Less chromatic aberration
+        self.vignette_intensity = 0.05  # Even lighter vignette
+        self.chromatic_aberration = 0.25  # Less chromatic aberration
         self.performance_mode = True
         
         # Scanlines
@@ -115,7 +115,7 @@ class ControlPanel:
         curve_frame.pack(fill='x', padx=5, pady=5)
         
         self.curve_var = tk.DoubleVar(value=self.curvature)
-        ttk.Scale(curve_frame, from_=0, to=2, variable=self.curve_var,
+        ttk.Scale(curve_frame, from_=0, to=0.5, variable=self.curve_var,
                  command=self.update_filter_params).pack(fill='x')
         
         # Chromatic Aberration
@@ -291,8 +291,12 @@ class CRTFilter:
         width = surface.get_width()
         height = surface.get_height()
         
+        # Create curved surface with same format as input
+        curved = pygame.Surface((width, height), surface.get_flags())
+        
+        # Calculate distortion with reduced strength
         X, Y, R = self.create_coordinate_grid(width, height)
-        F = 1 + R * (self.curvature * R)
+        F = 1 + R * (self.curvature * R * 0.5)  # Reduce effect strength
         
         source_x = ((X * F + 1) * width / 2).astype(np.int32)
         source_y = ((Y * F + 1) * height / 2).astype(np.int32)
@@ -300,10 +304,9 @@ class CRTFilter:
         source_x = np.clip(source_x, 0, width - 1)
         source_y = np.clip(source_y, 0, height - 1)
         
-        curved = pygame.Surface((width, height), pygame.SRCALPHA)
+        # Copy pixels with proper format preservation
         pixels = pygame.surfarray.pixels3d(curved)
         source_pixels = pygame.surfarray.pixels3d(surface)
-        
         pixels[:] = source_pixels[source_x.T, source_y.T]
         
         del pixels
@@ -365,10 +368,10 @@ def run_filter(control_panel):
                         control_panel.scanline_var.set(min(0.5, control_panel.scanline_var.get() + 0.05))
                         control_panel.update_filter_params()
                     elif event.key == pygame.K_3:
-                        control_panel.curve_var.set(max(0, control_panel.curve_var.get() - 0.1))
+                        control_panel.curve_var.set(max(0, control_panel.curve_var.get() - 0.02))
                         control_panel.update_filter_params()
                     elif event.key == pygame.K_4:
-                        control_panel.curve_var.set(min(2, control_panel.curve_var.get() + 0.1))
+                        control_panel.curve_var.set(min(0.5, control_panel.curve_var.get() + 0.02))
                         control_panel.update_filter_params()
                     elif event.key == pygame.K_5:
                         control_panel.chroma_var.set(max(0, control_panel.chroma_var.get() - 0.5))
